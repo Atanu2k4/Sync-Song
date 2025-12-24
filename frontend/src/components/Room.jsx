@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-// REVERTED TO STANDARD IMPORT
-import ReactPlayer from "react-player";
 import useWebSocket, { ReadyState } from 'react-use-websocket';
 import { WS_URL } from '../config';
 import './Room.css';
@@ -15,12 +13,13 @@ const Room = () => {
     const { roomId } = useParams();
     const navigate = useNavigate();
     const playerRef = useRef(null);
-    const isUserSeeking = useRef(false);
 
     // --- STATE ---
-    const [url, setUrl] = useState('https://www.youtube.com/watch?v=yQdVnvqI37M');
+    const [url, setUrl] = useState('');
     const [playing, setPlaying] = useState(false);
     const [isReady, setIsReady] = useState(false);
+    const [player, setPlayer] = useState(null);
+    const ignoreNextStateChange = useRef(false);
 
     // Search State
     const [searchQuery, setSearchQuery] = useState('');
@@ -33,9 +32,6 @@ const Room = () => {
     
     // --- WEBSOCKET CONNECTION ---
     const { sendMessage, lastJsonMessage, readyState } = useWebSocket(`${WS_URL}/${roomId}`, {
-        onOpen: () => {
-            console.log('✅ Connected to WebSocket');
-        },
         shouldReconnect: (closeEvent) => true,
     });
 
@@ -43,32 +39,24 @@ const Room = () => {
     useEffect(() => {
         if (lastJsonMessage !== null) {
             const { type, payload } = lastJsonMessage;
-            console.log("📩 Received:", type, payload);
 
             switch (type) {
-                case 'SYNC_STATE': // Initial load
+                case 'SYNC_STATE':
                     if (payload.url) setUrl(payload.url);
-                    setPlaying(payload.is_playing);
-                    // Slight delay to allow player to load before seeking
-                    if (payload.timestamp > 0) {
-                        setTimeout(() => {
-                            if (playerRef.current) playerRef.current.seekTo(payload.timestamp);
-                        }, 1000);
-                    }
+                    setPlaying(false);
                     break;
-                case 'PLAY': setPlaying(true); break;
-                case 'PAUSE': setPlaying(false); break;
+                case 'PLAY':
+                    setPlaying(true);
+                    break;
+                case 'PAUSE':
+                    setPlaying(false);
+                    break;
                 case 'CHANGE_URL':
                     if (payload.url) {
                         setUrl(payload.url);
-                        setPlaying(true);
+                        setPlaying(false);
                         setSearchResults([]);
                         setSearchQuery('');
-                    }
-                    break;
-                case 'SEEK':
-                    if (playerRef.current && Math.abs(playerRef.current.getCurrentTime() - payload.time) > 1) {
-                        playerRef.current.seekTo(payload.time);
                     }
                     break;
                 default: break;
@@ -76,32 +64,81 @@ const Room = () => {
         }
     }, [lastJsonMessage]);
 
+    // Extract YouTube video ID from URL
+    const getYouTubeId = (url) => {
+        if (!url) return null;
+        const regExp = /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?))\??v?=?([^#&?]*).*/;
+        const match = url.match(regExp);
+        return (match && match[7].length === 11) ? match[7] : null;
+    };
+
+    const videoId = getYouTubeId(url);
+
+    // Load YouTube IFrame API
+    useEffect(() => {
+        if (!window.YT) {
+            const tag = document.createElement('script');
+            tag.src = 'https://www.youtube.com/iframe_api';
+            const firstScriptTag = document.getElementsByTagName('script')[0];
+            firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+        }
+    }, []);
+
+    // Initialize player when iframe loads
+    useEffect(() => {
+        if (videoId && window.YT && window.YT.Player) {
+            const initPlayer = () => {
+                const ytPlayer = new window.YT.Player(`youtube-player-${roomId}`, {
+                    events: {
+                        onReady: (event) => {
+                            setPlayer(event.target);
+                            setIsReady(true);
+                        },
+                        onStateChange: (event) => {
+                            if (ignoreNextStateChange.current) {
+                                ignoreNextStateChange.current = false;
+                                return;
+                            }
+                            if (event.data === 1 && !playing) {
+                                setPlaying(true);
+                                sendMessage(JSON.stringify({ type: 'PLAY' }));
+                            } else if (event.data === 2 && playing) {
+                                setPlaying(false);
+                                sendMessage(JSON.stringify({ type: 'PAUSE' }));
+                            }
+                        }
+                    }
+                });
+            };
+
+            if (window.YT.loaded) {
+                initPlayer();
+            } else {
+                window.onYouTubeIframeAPIReady = initPlayer;
+            }
+        }
+    }, [videoId, roomId]);
+
+    // Sync play/pause from WebSocket
+    useEffect(() => {
+        if (player) {
+            if (playing) {
+                const state = player.getPlayerState();
+                if (state !== 1) { // Not playing
+                    ignoreNextStateChange.current = true;
+                    player.playVideo();
+                }
+            } else {
+                const state = player.getPlayerState();
+                if (state === 1) { // Is playing
+                    ignoreNextStateChange.current = true;
+                    player.pauseVideo();
+                }
+            }
+        }
+    }, [playing, player]);
+
     // --- ACTIONS ---
-
-    const handlePlay = () => {
-        if (!playing) {
-            setPlaying(true);
-            sendMessage(JSON.stringify({ type: 'PLAY' }));
-        }
-    };
-
-    const handlePause = () => {
-        if (playing) {
-            setPlaying(false);
-            sendMessage(JSON.stringify({ type: 'PAUSE' }));
-        }
-    };
-
-    const handleSeek = (seconds) => {
-        if (!isUserSeeking.current) return;
-
-        sendMessage(JSON.stringify({
-            type: 'SEEK',
-            payload: { time: seconds }
-        }));
-
-        isUserSeeking.current = false;
-    };
 
     // --- SEARCH & SELECTION LOGIC ---
 
@@ -120,16 +157,30 @@ const Room = () => {
             const data = await response.json();
             setSearchResults(data);
         } catch (error) {
-            console.error("Search failed", error);
+            setSearchResults([]);
         }
         setIsSearching(false);
     };
 
     const selectVideo = (videoUrl) => {
-        console.log("👆 Loading video:", videoUrl);
+        let cleanUrl = videoUrl.trim();
+        try {
+            const urlObj = new URL(cleanUrl);
+            
+            if (urlObj.hostname === 'youtu.be') {
+                const videoId = urlObj.pathname.substring(1);
+                cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            } else if (urlObj.hostname.includes('youtube.com')) {
+                urlObj.searchParams.delete('si');
+                urlObj.searchParams.delete('feature');
+                cleanUrl = urlObj.toString();
+            }
+        } catch (e) {
+            // URL parsing failed, use original
+        }
 
         // 1. Update LOCAL state immediately
-        setUrl(videoUrl);
+        setUrl(cleanUrl);
         setPlaying(false);
         setSearchResults([]);
         setSearchQuery('');
@@ -137,7 +188,7 @@ const Room = () => {
         // 2. Send message to server
         sendMessage(JSON.stringify({
             type: 'CHANGE_URL',
-            payload: { url: videoUrl }
+            payload: { url: cleanUrl }
         }));
     };
 
@@ -172,40 +223,52 @@ const Room = () => {
             </div>
 
             {/* Video Player */}
-            <div
-                className="player-wrapper"
-                onMouseDown={() => (isUserSeeking.current = true)}
-            >
-                <ReactPlayer
-                    key={url} 
-                    ref={playerRef}
-                    url={url}
-                    width="100%"
-                    height="100%"
-                    playing={playing}
-                    controls
-                    onReady={() => {
-                        console.log("🎬 Player ready");
-                        setIsReady(true);
-                        setPlaying(true);
-                    }}
-                    onPlay={handlePlay}
-                    onPause={handlePause}
-                    onProgress={({ playedSeconds }) => {
-                        if (isUserSeeking.current) {
-                            handleSeek(playedSeconds);
-                        }
-                    }}
-                    config={{
-                        youtube: {
-                            playerVars: {
-                                autoplay: 1,
-                                modestbranding: 1,
-                                rel: 0
-                            }
-                        }
-                    }}
-                />
+            <div className="player-wrapper">
+                {!url ? (
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        height: '100%',
+                        color: '#00D9FF',
+                        fontSize: '1.5rem',
+                        textAlign: 'center',
+                        padding: '20px'
+                    }}>
+                        🎵 Paste a YouTube URL below to start watching together!
+                    </div>
+                ) : videoId ? (
+                    <iframe
+                        id={`youtube-player-${roomId}`}
+                        ref={playerRef}
+                        src={`https://www.youtube.com/embed/${videoId}?enablejsapi=1&origin=${window.location.origin}`}
+                        title="YouTube video player"
+                        frameBorder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowFullScreen
+                        style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '100%',
+                            height: '100%',
+                            border: 'none'
+                        }}
+                    />
+                ) : (
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        height: '100%',
+                        color: '#ff6b6b',
+                        fontSize: '1.2rem',
+                        textAlign: 'center',
+                        padding: '20px'
+                    }}>
+                        ❌ Invalid YouTube URL. Please paste a valid YouTube link.
+                    </div>
+                )}
             </div>
 
             {/* Search Bar */}
