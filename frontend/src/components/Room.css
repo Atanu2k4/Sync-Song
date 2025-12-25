@@ -84,8 +84,8 @@
 /* Video Player Wrapper */
 .player-wrapper {
   width: 100%;
-  max-width: 1100px;
-  aspect-ratio: 16/9;
+  max-width: 87.5rem; /* Change this to adjust player width (1400px default) */
+  aspect-ratio: 16 / 9; /* Maintains video aspect ratio - change to adjust height */
   background: #000;
   border-radius: 16px;
   overflow: hidden;
@@ -94,6 +94,20 @@
   margin-bottom: 30px;
   position: relative;
   transition: all 0.3s ease;
+}
+
+/* Ensure ReactPlayer and iframe take full space */
+.player-wrapper > div,
+.player-wrapper > div > div {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.player-wrapper iframe {
+  width: 100% !important;
+  height: 100% !important;
+  border: none !important;
+  display: block !important;
 }
 
 .player-wrapper:hover {

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import '../App.css'; // Ensure styling is applied
+import '../App.css';
 
 const Lobby = () => {
     const [roomCode, setRoomCode] = useState('');
