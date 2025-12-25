@@ -9,9 +9,10 @@ async def get_room_state(room_id: str):
     # Default state if new room
     new_room = {
         "room_id": room_id,
-        "url": "https://www.youtube.com/watch?v=ysz5S6PUM-U",
+        "url": "",
         "is_playing": False,
-        "timestamp": 0
+        "started_at": None,   # server timestamp in ms
+        "paused_at": None     # server timestamp in ms
     }
     room_states[room_id] = new_room
     return new_room
@@ -21,9 +22,10 @@ async def update_room_state(room_id: str, update_data: dict):
     if room_id not in room_states:
         room_states[room_id] = {
             "room_id": room_id,
-            "url": "https://www.youtube.com/watch?v=ysz5S6PUM-U",
+            "url": "",
             "is_playing": False,
-            "timestamp": 0
+            "started_at": None,   # server timestamp in ms
+            "paused_at": None     # server timestamp in ms
         }
     # Update with new data
     room_states[room_id].update(update_data)

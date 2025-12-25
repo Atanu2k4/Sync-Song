@@ -13,6 +13,9 @@ const Room = () => {
     const { roomId } = useParams();
     const navigate = useNavigate();
     const playerRef = useRef(null);
+    const userActionRef = useRef(false);
+    const lastSeekTimeRef = useRef(0);
+
 
     // --- STATE ---
     const [url, setUrl] = useState('');
@@ -41,14 +44,36 @@ const Room = () => {
             const { type, payload } = lastJsonMessage;
 
             switch (type) {
-                case 'SYNC_STATE':
-                    if (payload.url) setUrl(payload.url);
-                    setPlaying(false);
+                case 'SYNC_STATE': {
+                    const { url, is_playing, started_at } = payload;
+
+                    if (url) setUrl(url);
+
+                    if (player && is_playing && started_at) {
+                        const elapsed = (Date.now() - started_at) / 1000;
+
+                        ignoreNextStateChange.current = true;
+                        player.seekTo(elapsed, true);
+                        player.playVideo();
+                        setPlaying(true);
+                    } else {
+                        setPlaying(false);
+                    }
                     break;
-                case 'PLAY':
+                }                
+                case 'PLAY': {
+                    if (!player || !payload?.started_at) break;
+
+                    const elapsed = (Date.now() - payload.started_at) / 1000;
+                    ignoreNextStateChange.current = true;
+                    player.seekTo(elapsed, true);
+                    player.playVideo();
                     setPlaying(true);
                     break;
+                }                
                 case 'PAUSE':
+                    ignoreNextStateChange.current = true;
+                    player.pauseVideo();
                     setPlaying(false);
                     break;
                 case 'CHANGE_URL':
@@ -59,10 +84,14 @@ const Room = () => {
                         setSearchQuery('');
                     }
                     break;
+                case 'SEEK':
+                    ignoreNextStateChange.current = true;
+                    player.seekTo(payload.time, true);
+                    break;                    
                 default: break;
             }
         }
-    }, [lastJsonMessage]);
+    }, [lastJsonMessage, player, sendMessage]);
 
     // Extract YouTube video ID from URL
     const getYouTubeId = (url) => {
@@ -84,10 +113,26 @@ const Room = () => {
         }
     }, []);
 
+    const handleSeek = () => {
+        if (!player) return;
+
+        const time = player.getCurrentTime();
+        const diff = Math.abs(time - lastSeekTimeRef.current);
+
+        if (diff > 1.2) {   // real seek
+            lastSeekTimeRef.current = time;
+            sendMessage(JSON.stringify({
+                type: 'SEEK',
+                payload: { time }
+            }));
+        }
+    };    
+
     // Initialize player when iframe loads
     useEffect(() => {
         if (videoId && window.YT && window.YT.Player) {
             const initPlayer = () => {
+
                 const ytPlayer = new window.YT.Player(`youtube-player-${roomId}`, {
                     events: {
                         onReady: (event) => {
@@ -95,18 +140,38 @@ const Room = () => {
                             setIsReady(true);
                         },
                         onStateChange: (event) => {
+                            const YT_STATE = window.YT.PlayerState;
+
+                            // USER initiated actions (mouse click / seek)
+                            if (event.data === YT_STATE.PLAYING) {
+                                userActionRef.current = true;
+                            }
+
+                            if (event.data === YT_STATE.PAUSED) {
+                                userActionRef.current = true;
+                            }
+
                             if (ignoreNextStateChange.current) {
                                 ignoreNextStateChange.current = false;
+                                userActionRef.current = false;
                                 return;
                             }
-                            if (event.data === 1 && !playing) {
-                                setPlaying(true);
+
+                            if (event.data === YT_STATE.PLAYING && userActionRef.current) {
+                                userActionRef.current = false;
                                 sendMessage(JSON.stringify({ type: 'PLAY' }));
-                            } else if (event.data === 2 && playing) {
-                                setPlaying(false);
+                            }
+
+                            if (event.data === YT_STATE.PAUSED && userActionRef.current) {
+                                userActionRef.current = false;
                                 sendMessage(JSON.stringify({ type: 'PAUSE' }));
                             }
-                        }
+
+                            if (event.data === YT_STATE.BUFFERING && userActionRef.current) {
+                                userActionRef.current = false;
+                                handleSeek();
+                            }
+                        }                                             
                     }
                 });
             };
@@ -118,25 +183,6 @@ const Room = () => {
             }
         }
     }, [videoId, roomId]);
-
-    // Sync play/pause from WebSocket
-    useEffect(() => {
-        if (player) {
-            if (playing) {
-                const state = player.getPlayerState();
-                if (state !== 1) { // Not playing
-                    ignoreNextStateChange.current = true;
-                    player.playVideo();
-                }
-            } else {
-                const state = player.getPlayerState();
-                if (state === 1) { // Is playing
-                    ignoreNextStateChange.current = true;
-                    player.pauseVideo();
-                }
-            }
-        }
-    }, [playing, player]);
 
     // --- ACTIONS ---
 
